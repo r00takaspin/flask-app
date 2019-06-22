@@ -1,0 +1,20 @@
+mkdir -p build/systemd
+cat <<EOT>> build/systemd/flask-app.service
+[Unit]
+Description=flask-app
+After=network.target
+
+[Service]
+# имя пользователя и группа, под которым будет запущено приложение
+User=flask-app
+Group=flask-app
+# директория в которой запускается приложение, конфиги приложения должны находиться в ней, иначе могут случиться ошибки доступа к файлам
+WorkingDirectory=/var/app/flask-app
+Type=simple
+ExecStart=/var/app/flask-app/venv/bin/gunicorn --pythonpath /var/app/flask-app/sticker_app wsgi:app -c /var/app/flask-app/conf/gunicorn.conf --preload
+ExecReload=/bin/kill -HUP $MAINPID
+LimitNOFILE=1048000
+LimitNPROC=32768
+
+[Install]
+WantedBy=multi-user.target
