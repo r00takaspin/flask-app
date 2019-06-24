@@ -36,12 +36,12 @@ tar xjf %{SOURCE0}
 mkdir -p %{buildroot}/var/app/%{name}/conf
 cp -r %{_builddir}/*.* %{buildroot}/var/app/%{name}
 cp -r %{_builddir}/vendor %{buildroot}/var/app/%{name}/vendor
+cp -r %{_builddir}/build/config/gunicorn.conf %{buildroot}/var/app/%{name}/conf/gunicorn.conf
 
 echo "Installing systemd config"
 %{__install} -p -D -m 0644 %{_builddir}/build/systemd/%{name}.service %{buildroot}/usr/lib/systemd/system/%{name}.service
 
 %post
-ls -la /var/app/%{name}
 python3.5 -m venv /var/app/%{name}/venv
 . /var/app/flask-app/venv/bin/activate
 

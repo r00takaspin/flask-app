@@ -1,4 +1,5 @@
-Цель этой статьи - наглядно показать как упаковать flask приложение на python3 в RPM пакет для последующего деплоя. Так как свежих материалов по созданию пакетов из приложений на основе исходников не так много, я решил написать собственную статью.
+Цель этой статьи - наглядно продемонстрировать как упаковать flask приложение в RPM пакет для последующего деплоя. 
+Так как свежих материалов по созданию пакетов на основе исходных кодов не так много, я решил написать собственную статью.
 
 ### Требование к приложению:
 * приложение должно быть упаковано в RPM пакет вместе с зависимостями
@@ -69,7 +70,7 @@ Werkzeug==0.15.4
 echo "from main import app" >> wsgi.py
 ```
 
-Договоримся, что корень приложения будет **/var/log/flask-app/**, создадим конфиг gynicorn
+Договоримся, что корень приложения будет **/var/app/flask-app/**, создадим конфиг gynicorn:
 
 ```bash
 mkdir -p build/config
@@ -100,7 +101,7 @@ Group=flask-app
 # директория в которой запускается приложение, конфиги приложения должны находиться в ней, иначе могут случиться ошибки доступа к файлам
 WorkingDirectory=/var/app/flask-app
 Type=simple
-ExecStart=/var/app/flask-app/venv/bin/gunicorn --pythonpath /var/app/flask-app/sticker_app wsgi:app -c /var/app/flask-app/conf/gunicorn.conf --preload
+ExecStart=/var/app/flask-app/venv/bin/gunicorn --pythonpath /var/app/flask-app/flask-app wsgi:app -c /var/app/flask-app/conf/gunicorn.conf --preload
 ExecReload=/bin/kill -HUP $MAINPID
 LimitNOFILE=1048000
 LimitNPROC=32768
@@ -113,19 +114,19 @@ EOT
  Обратим внимание на то, как запускается приложение:
 
 ````bash
-ExecStart=/var/app/flask-app/venv/bin/gunicorn --pythonpath /var/app/flask-app/sticker_app wsgi:app -c /var/app/flask-app/conf/gunicorn.conf --preload
+ExecStart=/var/app/flask-app/venv/bin/gunicorn --pythonpath /var/app/flask-app/flask-app wsgi:app -c /var/app/flask-app/conf/gunicorn.conf --preload
 ````
 
 Здесь следует обратить внимание на параметр —preload, который значительно ускоряет запуск приложения и уменьшает [количество потребляемой приложением памяти](http://docs.gunicorn.org/en/stable/settings.html#preload-app). 
 
 ## Создадим RPM пакет
 
-Для создания пакетам нам понадобится утилита rpmbuild, docker образ, в котором будет собираться и тестироваться приложение. 
+Для создания пакета нам понадобится утилита rpmbuild, docker образ, в котором будет собираться и тестироваться приложение. 
 
 Сборка пакета состоит из следующи шагов:
 
 1. Происходит проверка зависимостей 
-2. Создаем арихв с исходными кодами приложения
+2. Создается архив с исходными кодами приложения
 3. При сборке пакета необходимые файлы копируются из папки %{_builddir} в папку %{buildroot} в разделе %install
 4. Список тех файлов, которые попадут на целевую систему описываются в %files, остальные файлы будут проигнорированы
 5. Создается пакет в папке /root/rpmbuild/RPMS/x86_64/
@@ -167,7 +168,7 @@ BuildRequires:  redhat-rpm-config
 %description
 %{name} built with generic python project spec
 
-# создаем пользователя
+# создаем пользователя, под которым будет запущено приложение
 %pre
 /usr/bin/getent group %{name} || /usr/sbin/groupadd -r %{name}
 /usr/bin/getent passwd %{name} || /usr/sbin/useradd -r -d /opt/%{name}/ -s /bin/false %{name} -g %{name}
@@ -193,7 +194,11 @@ echo "Installing systemd config"
     %{__install} -p -D -m 0644 %{_builddir}/%{name}/build/systemd/%{name}.service %{buildroot}/usr/lib/systemd/system/%{name}.service
 
 %post
-/var/app/%{name}/build/script/setup.sh
+python3.5 -m venv /var/app/%{name}/venv
+. /var/app/flask-app/venv/bin/activate
+
+pip3.5 install --upgrade pip
+pip3.5 install /var/app/flask-app/vendor/*.*
 
 if [ $1 -gt 1 ]; then
     echo "Upgrade"
@@ -206,11 +211,10 @@ else
     mkdir -p /var/log/%{name}
 fi
 
+# 
 chown -R %{name}:%{name} /var/log/%{name}
-chown -R %{name}:%{name} /var/app/stickersuggest
+chown -R %{name}:%{name} /var/app/%{name}
 
-# remove all files int app root
-find /var/app/%{name} -maxdepth 1 -type f -delete
 # remove build files
 rm -rf /var/app/%{name}/build
 rm -rf /var/app/%{name}/vendor
@@ -227,7 +231,68 @@ rm -rf %{buildroot}
 EOT
 ```
 
-Собирать rpm мы будем в докере:
+Для сборки RPM пакета добавим Dockerfile:
 
+```dockerfile
+ARG VERSION=1.0
+ARG NAME=flask-app
+ARG ARCHIVE=$NAME-$VERSION.tar.bz2
 
+FROM centos as rpm-build
+ARG VERSION
+ARG NAME
+ARG ARCHIVE
+
+WORKDIR /tmp/src
+COPY . .
+RUN ./build/script/setup.sh && rm -rf setup.sh
+
+RUN pip3.5 download --no-deps --dest ./vendor -r requirements.txt
+RUN tar cjv -f $ARCHIVE build/ vendor/ main.py wsgi.py
+RUN mkdir /tmp/app && cp $ARCHIVE /tmp/app/
+RUN rpmbuild -bb build/rpm/$NAME.spec --define "_version $VERSION" --define "_sourcedir /tmp/app"
+```
+
+Для сборки RPM пакета выполним следующие команды:
+
+```bash
+# образ для сборки RPM пакета
+docker build --target rpm-build -t rpm-build .
+docker run -v $(pwd)/rpm:/tmp/rpm rpm-build sh -c 'cp /root/rpmbuild/RPMS/x86_64/*.rpm /tmp/rpm'
+```
+
+После этого, в директории rpm появится файл с пакетом:
+
+```bash
+$ ls -la ./rpm
+total 1296
+drwxr-xr-x   3 voldemar  staff      96 Jun 24 22:19 .
+drwxr-xr-x  14 voldemar  staff     448 Jun 24 22:22 ..
+-rw-r--r--   1 voldemar  staff  662348 Jun 24 22:19 flask-app-1.0-1561403919.x86_64.rpm
+```
+
+Теперь проверим, как пакет установится в конечную систему, сделаем это при помощи докера. Для этого, нам понадобится добавить еще один stage в Dockerfile:
+
+```do
+...
+
+FROM centos/systemd as rpm-check
+COPY build/script/setup.sh setup.sh
+RUN ./setup.sh && rm -rf setup.sh
+COPY --from=rpm-build /root/rpmbuild/RPMS/x86_64/*.rpm /tmp/
+CMD ["/usr/sbin/init"]
+
+```
+
+По умолчанию systemd отключен в docker образах, так как подразумевается, что в контейнере будет запущен всего один процесс. Для этого нам придется воспользоваться официальным образом centos/systemd.
+
+Указанный выше конфиг запускает systemd демон, но тем самым он блокирует IO. Поэтому нам нужно запустить контейнер c флагом -d и подключиться к нему из другой сессии, чтобы установить пакет и проверить   то, как запустился веб-сервер:
+
+```bash
+docker kill rpm-check-cont || true
+docker rm rpm-check-cont || true
+DOCKER_BUILDKIT=1 docker build --target rpm-check -t rpm-check .
+docker run --privileged --name rpm-check-cont -v /sys/fs/cgroup:/sys/fs/cgroup:ro -d rpm-check
+docker exec rpm-check-cont sh -c 'rpm -i /tmp/flask-app-*.rpm && systemctl enable flask-app && systemctl start flask-app && systemctl status flask-app'
+```
 
