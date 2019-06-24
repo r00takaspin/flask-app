@@ -15,7 +15,31 @@ docker, flask, gunicorn, rpmbuild, pip
 3. Написание .spec файла для построения RPM пакета
 4. Создание docker образов для сборки пакета и его установке на тестовую сборку
 
+**Общая файловая структура**:
+
+```bash
+├── Dockerfile
+├── Makefile
+├── build
+│   ├── config
+│   │   └── gunicorn.conf
+│   ├── rpm
+│   │   └── flask-app.spec
+│   ├── script
+│   │   └── setup.sh
+│   └── systemd
+│       └── flask-app.service
+├── main.py
+├── requirements.txt
+├── rpm
+│   └── .keep
+└── wsgi.py
+```
+
+
+
 ## Создание тестового приложения
+
 ### Подготовка окружения
 Устанавливаем актуальную версию python и pip:
 ```bash
@@ -34,7 +58,7 @@ python3 -m venv venv
 # активируем venv
 . ./venv/bin/activate
 # обновляем pip
-pip install --upgrade pip
+pip3 install --upgrade pip
 
 #TODO: добавить pytorch модель
 cat <<EOT >> main.py
@@ -46,7 +70,7 @@ def hello():
     return "Hello Хабр!"
 EOT
 
-pip install gunicorn
+pip3 install gunicorn
 
 # фиксируем зависимости
 pip freeze > requirements.txt
@@ -57,11 +81,11 @@ pip freeze > requirements.txt
 $ cat requirements.txt
 Click==7.0
 Flask==1.0.3
-gunicorn==19.9.0
 itsdangerous==1.1.0
 Jinja2==2.10.1
 MarkupSafe==1.1.1
 Werkzeug==0.15.4
+gunicorn==19.9.0
 ```
 
 ## Подготовим приложение к запуску в production
@@ -271,7 +295,9 @@ drwxr-xr-x  14 voldemar  staff     448 Jun 24 22:22 ..
 -rw-r--r--   1 voldemar  staff  662348 Jun 24 22:19 flask-app-1.0-1561403919.x86_64.rpm
 ```
 
-Теперь проверим, как пакет установится в конечную систему, сделаем это при помощи докера. Для этого, нам понадобится добавить еще один stage в Dockerfile:
+Этот пакет можно использовать для деплоя на конечную машину. 
+
+Но, перед тем как файл попадет на сервер, хотелось бы проверить, успешно ли прошла установка, сделаем это при помощи докера. Для этого, нам понадобится добавить еще один stage в Dockerfile:
 
 ```do
 ...
@@ -284,7 +310,7 @@ CMD ["/usr/sbin/init"]
 
 ```
 
-По умолчанию systemd отключен в docker образах, так как подразумевается, что в контейнере будет запущен всего один процесс. Для этого нам придется воспользоваться официальным образом centos/systemd.
+По умолчанию systemd отключен в docker образах, так как подразумевается, что в контейнере будет запущен всего один процесс. Чтобы это обойти, нам придется воспользоваться официальным образом centos/systemd.
 
 Указанный выше конфиг запускает systemd демон, но тем самым он блокирует IO. Поэтому нам нужно запустить контейнер c флагом -d и подключиться к нему из другой сессии, чтобы установить пакет и проверить   то, как запустился веб-сервер:
 
@@ -292,7 +318,15 @@ CMD ["/usr/sbin/init"]
 docker kill rpm-check-cont || true
 docker rm rpm-check-cont || true
 DOCKER_BUILDKIT=1 docker build --target rpm-check -t rpm-check .
-docker run --privileged --name rpm-check-cont -v /sys/fs/cgroup:/sys/fs/cgroup:ro -d rpm-check
+docker run --privileged --name rpm-check-cont -v /sys/fs/cgroup:/sys/fs/cgroup:ro -p 8000:8000 -d rpm-check
 docker exec rpm-check-cont sh -c 'rpm -i /tmp/flask-app-*.rpm && systemctl enable flask-app && systemctl start flask-app && systemctl status flask-app'
 ```
 
+Теперь, попробуем обратиться к хосту:
+
+```bash
+$ curl http://127.0.0.1:8000/
+Hello Хабр!%
+```
+
+[Ссылка на репозиторий с примером](https://github.com/r00takaspin/flask-app).
